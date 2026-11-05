@@ -1,0 +1,15 @@
+name: Android build environment
+description: Install the pinned Java and Android tool versions used by this project
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3 # v4
+      with:
+        distribution: temurin
+        java-version: '17'
+    - uses: android-actions/setup-android@9fc6c4e9069bf8d3d10b2204b1fb8f6ef7065407 # v3
+      with:
+        log-accepted-android-sdk-licenses: false
+    - name: Install Android SDK
+      shell: bash
+      run: sdkmanager 'platforms;android-33' 'build-tools;34.0.0'

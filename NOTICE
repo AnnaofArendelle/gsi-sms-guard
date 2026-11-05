@@ -1,0 +1,14 @@
+GSI SMS Repair Framework 0.3.0
+Application/worker source provided under GPL-3.0.
+
+Includes an unchanged PHH Superuser native client from the user's current GSI:
+https://github.com/phhusson/Superuser
+Copyright 2010 Adam Shanks; Copyright 2008 Zinx Verituse (native files).
+Copyright 2013 Koushik Dutta; Copyright 2015 Pierre-Hugues Husson (project).
+See LICENSE and third_party/phh-superuser-source.tar.gz for source and licenses.
+Native file notices are preserved in the source archive.
+
+ATEL wire protocol reference (implementation here independently written):
+https://github.com/yarosz/lp3-treble/tree/main/atel
+https://github.com/TrebleDroid/device_phh_treble/pull/88
+No Qualcomm native library or firmware is redistributed in this application.

@@ -1,0 +1,5 @@
+https://github.com/phhusson/Superuser
+9ae9705874b9fc7d3990aac639ab9667b06519c0
+Bundled client is the unchanged /system/bin/phh-su from the current GSI.
+The inspected su.c and daemon.c match the included upstream source byte-for-byte.
+Exact original binary toolchain/build provenance is not asserted.

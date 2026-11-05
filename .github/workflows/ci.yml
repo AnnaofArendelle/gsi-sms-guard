@@ -1,0 +1,48 @@
+name: CI
+on:
+  push:
+    branches: ['main']
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  check:
+    name: Build and checks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-build
+      - name: Check scripts
+        run: |
+          bash -n build.sh scripts/test.sh
+          shellcheck build.sh scripts/test.sh
+          python3 scripts/version.py
+      - name: Validate workflows
+        run: |
+          gh release download "v${ACTIONLINT_VERSION}" --repo rhysd/actionlint --pattern "actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz" --pattern 'actionlint_*_checksums.txt' --dir "$RUNNER_TEMP/actionlint"
+          cd "$RUNNER_TEMP/actionlint"
+          sha256sum --ignore-missing --check "actionlint_${ACTIONLINT_VERSION}_checksums.txt"
+          tar -xzf "actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz" actionlint
+          cd "$GITHUB_WORKSPACE"
+          "$RUNNER_TEMP/actionlint/actionlint" -color
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ACTIONLINT_VERSION: '1.7.12'
+      - name: Build development APK
+        run: ./build.sh
+      - name: Run tests and packaging checks
+        run: ./scripts/test.sh
+      - name: Upload development build
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: development-apk-${{ github.sha }}
+          path: build/GSI-SMS-Guard.apk
+          if-no-files-found: error
+          retention-days: 7
