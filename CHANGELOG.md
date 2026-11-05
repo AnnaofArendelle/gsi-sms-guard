@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.4.0
+
+- Remove device and DSU/ROM allowlists from ATEL readiness and automatic operation.
+- Probe each OEM hook with read-only HIDL interfaceChain; work with one available slot.
+- Add explicit “attempt anyway” actions for unmatched/unknown conditions, including persistent automatic attempt mode.
+- Keep root/HAL/SELinux failures visible; an override attempts the fixed command, not arbitrary commands.
+- Separate mount prerequisites from ATEL compatibility, preserve device metadata, and control detected RIL services.
+- Support periodic readiness refresh when RIL process names are unknown.
+- Expand to 20 compatibility, warning override and polling tests.
+
 ## 0.3.0
 
 - Add a foreground management service that reports ATEL UI ready at boot, after app updates, and after Qualcomm RIL process changes.

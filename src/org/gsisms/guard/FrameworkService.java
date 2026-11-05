@@ -15,10 +15,11 @@ public final class FrameworkService extends Service {
     private RootClient root;
     private String lastIdentity="";
     private long lastSent=0;
+    private long lastAttempt=0;
     private boolean destroyed;
     @Override public void onCreate(){super.onCreate();android.util.Log.i("GsiSmsFramework","service created");
         ((NotificationManager)getSystemService(NOTIFICATION_SERVICE)).createNotificationChannel(new NotificationChannel(CHANNEL,"GSI 短信修复框架",NotificationManager.IMPORTANCE_LOW));
-        startForeground(NOTIFY,notification("正在检查 GSI 和高通无线服务"));
+        startForeground(NOTIFY,notification("正在检查高通无线服务"));
         root=new RootClient(getApplicationInfo().nativeLibraryDir);
         worker=Executors.newSingleThreadScheduledExecutor();
         worker.scheduleWithFixedDelay(()->tick(),0,30,TimeUnit.SECONDS);
@@ -37,14 +38,11 @@ public final class FrameworkService extends Service {
     }
     JSONObject poll()throws Exception{
         // Shell-only polling avoids starting an ART VM every 30 seconds.
-        String query="getprop ro.gsid.image_running; getprop ro.product.vendor.device; "
-          +"if [ -e /system/bin/qcom-atel-ready ]; then echo builtin; else echo none; fi; "
-          +"readlink /proc/self/ns/mnt; readlink /proc/1/ns/mnt; "
-          +"awk '$5==\"/data/vendor/radio\" {found=1} END {print found+0}' /proc/1/mountinfo; "
-          +"for pid in $(pidof qcrilNrd); do awk '{print $1 \":\" $22}' /proc/$pid/stat; done";
+        String query="if [ -e /system/bin/qcom-atel-ready ]; then echo builtin; else echo none; fi; "
+          +"awk '$5==\"/data/vendor/radio\" {found=1} END {print found+0}' /proc/self/mountinfo; "
+          +"for pid in $(pidof qcrilNrd qcrild qcrild2); do awk '{print $1 \":\" $22}' /proc/$pid/stat; done";
         PollState parsed=PollState.parse(root.run(query));
-        JSONObject r=new JSONObject();r.put("gsi",parsed.gsi);r.put("eligible",parsed.eligible);
-        r.put("message","设备、内置修复或挂载空间条件不符合");r.put("mounted",parsed.mounted);
+        JSONObject r=new JSONObject();r.put("builtin",parsed.builtin);r.put("mounted",parsed.mounted);
         r.put("identity",parsed.identity);return r;
     }
     void state(String text){android.util.Log.i("GsiSmsFramework",text);
@@ -56,16 +54,21 @@ public final class FrameworkService extends Service {
         if(!getSharedPreferences("framework",0).getBoolean("enabled",false)){stopSelf();return;}
         try{
             JSONObject r=poll();
-            if(!r.optBoolean("gsi")){state("当前为主系统，框架不执行无线操作");stopSelf();return;}
-            if(!r.optBoolean("eligible")){state(r.optString("message","设备不符合条件"));return;}
-            if(r.optBoolean("mounted")){state("临时挂载生效，暂停 ATEL 自动上报");lastIdentity="";return;}
+            boolean force=getSharedPreferences("framework",0).getBoolean("force",false);
+            if(!force&&r.optBoolean("builtin")){state("系统已有 ATEL 修复；如需重复上报，请重新确认警告");return;}
+            if(!force&&r.optBoolean("mounted")){state("radio 已有挂载，暂停 ATEL 自动上报");lastIdentity="";return;}
             String id=r.optString("identity");
-            if(id.isEmpty()){state("等待高通无线服务启动");return;}
-            if(!id.equals(lastIdentity)||SystemClock.elapsedRealtime()-lastSent>=300000){
-                state("检测到无线服务启动，正在上报 ATEL 就绪");
-                JSONObject ready=call("ready");
-                if(ready.optInt("sentSlots")!=ready.optInt("expectedSlots")){state("部分槽位尚未就绪，稍后重试");return;}
-                lastIdentity=id;lastSent=SystemClock.elapsedRealtime();state("已上报 ATEL 就绪；自动跟随无线服务重启");
+            long now=SystemClock.elapsedRealtime();
+            // Unknown process names still get a periodic interface probe; no vendor-name allowlist.
+            boolean due=lastSent==0||(!id.isEmpty()&&!id.equals(lastIdentity))||now-lastSent>=300000;
+            if(due&&(lastAttempt==0||now-lastAttempt>=30000)){
+                lastAttempt=now;state("正在检查接口并上报 ATEL 就绪");
+                JSONObject ready;
+                try{ready=call(force?"ready-force":"ready");}
+                catch(Exception ex){state("本次上报未完成，稍后重试："+RootClient.safeError(ex.getMessage()==null?"接口不可用":ex.getMessage()));return;}
+                if(ready.optInt("sentSlots")<ready.optInt("expectedSlots")){state("部分已检测槽位尚未发送成功，稍后重试");return;}
+                lastIdentity=id;lastSent=SystemClock.elapsedRealtime();
+                state("已上报 ATEL 就绪；"+(id.isEmpty()?"未识别 RIL 进程，每 5 分钟补发":"自动跟随无线服务重启")+(force?"（已确认警告）":""));
             }
         }catch(Exception ex){
             // Preserve enabled preference for a future user-started retry, but do not spam root prompts.

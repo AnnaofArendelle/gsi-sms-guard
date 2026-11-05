@@ -12,7 +12,17 @@ public final class Engine {
     static final String RADIO="/data/vendor/radio", CLONE="/data/local/tmp/radio-poweropt-test";
     static final String STATE="/data/local/tmp/radio-poweropt-state.json", KEY="persist.vendor.radio.poweron_opt";
     static final String HOOK="vendor.qti.hardware.radio.qcrilhook@1.0::IQtiOemHook";
-    static final String Q="'";
+    static final String[] SERVICE_NAMES={"vendor.qcrild","vendor.qcrild2","vendor.qcrilNrd","vendor.qcrilNrd2","qcrild","qcrild2"};
+    static String safeShell(String command){try{return shell(command);}catch(Exception ex){return "";}}
+    static String safeProp(String name){return safeShell("getprop "+RootClient.quote(name));}
+    static List<String> radioServices(){
+        List<String> result=new ArrayList<>();
+        for(String name:SERVICE_NAMES){String state=safeProp("init.svc."+name);if(!state.isEmpty())result.add(name);}
+        return result;
+    }
+    static boolean masterNamespace(){String self=safeShell("readlink /proc/self/ns/mnt"),init=safeShell("readlink /proc/1/ns/mnt");return !self.isEmpty()&&self.equals(init);}
+    static boolean databaseCompatible(){try{return !powerConfig().equals("missing");}catch(Exception ex){return false;}}
+    static Compatibility policy(JSONObject r){return new Compatibility(r.optBoolean("hook"),r.optBoolean("builtin"),r.optBoolean("mounted"),r.optBoolean("masterNamespace"),r.optBoolean("databaseCompatible"),r.optString("powerOpt").equals("1"),r.optBoolean("bufferEvidence"),r.optBoolean("servicesCompatible"));}
     static String shell(String command) throws Exception {
         java.lang.Process p=new ProcessBuilder("/system/bin/sh","-c",command).redirectErrorStream(true).start();
         p.getOutputStream().close();
@@ -51,53 +61,61 @@ public final class Engine {
         try(FileOutputStream out=new FileOutputStream(STATE)){out.write(object.toString().getBytes(java.nio.charset.StandardCharsets.UTF_8));out.getFD().sync();}
         shell("chmod 600 "+STATE);
     }
-    static void stop()throws Exception{
-        shell("setprop ctl.stop vendor.qcrild");shell("setprop ctl.stop vendor.qcrild2");
-        for(int i=0;i<20;i++){
-            if(prop("init.svc.vendor.qcrild").equals("stopped")&&prop("init.svc.vendor.qcrild2").equals("stopped"))return;
-            Thread.sleep(250);
-        }throw new IOException("无线服务没有停止，取消操作");
+    static List<String> stop()throws Exception{
+        List<String> running=new ArrayList<>();
+        for(String name:radioServices())if(safeProp("init.svc."+name).equals("running"))running.add(name);
+        if(running.isEmpty())throw new IOException("未识别到运行中的可控制 RIL 服务，未挂载");
+        try{
+            for(String name:running)shell("setprop ctl.stop "+RootClient.quote(name));
+            for(int i=0;i<40;i++){
+                boolean done=true;for(String name:running)if(!safeProp("init.svc."+name).equals("stopped"))done=false;
+                if(done&&safeShell("pidof qcrilNrd qcrild qcrild2").isEmpty())return running;
+                Thread.sleep(250);
+            }
+            throw new IOException("无线服务没有完全停止，取消挂载");
+        }catch(Exception ex){start(running);throw ex;}
     }
-    static void start()throws Exception{shell("setprop ctl.start vendor.qcrild");shell("setprop ctl.start vendor.qcrild2");}
-    static void requireEnvironment()throws Exception{
-        if(!prop("ro.gsid.image_running").equals("1"))throw new IOException("仅允许在正在运行的 DSU/GSI 内操作");
-        if(!prop("ro.product.vendor.device").equals("cupid"))throw new IOException("此版本只为已验证的小米 12 cupid 开放修改操作");
-        if(!new File(RADIO+"/qcrilNr.db").isFile())throw new IOException("没有找到已支持的高通配置数据库");
-        // Mount must affect init/RIL, not only a private Magisk/app namespace.
-        if(!shell("readlink /proc/self/ns/mnt").equals(shell("readlink /proc/1/ns/mnt")))
-            throw new IOException("Root 位于私有挂载空间。需要主挂载空间；当前未执行修改");
+    static void start(List<String> services)throws Exception{
+        IOException failure=null;for(String name:services)try{shell("setprop ctl.start "+RootClient.quote(name));}catch(Exception ex){failure=new IOException("恢复无线服务失败："+name,ex);}
+        if(failure!=null)throw failure;
     }
-    static void requireGsi()throws Exception{
-        requireEnvironment();
-        if(!shell("lshal").contains(HOOK))throw new IOException("没有找到支持的高通 OEM hook");
-        if(new File("/system/bin/qcom-atel-ready").exists())throw new IOException("系统已包含 qcom-atel-ready，请先核对内置服务，不重复修改");
+    static void requireMountPrerequisites()throws Exception{
+        if(!masterNamespace())throw new IOException("挂载需要主挂载空间；未执行目录修改。ATEL 上报不要求主挂载空间。");
+        if(!databaseCompatible())throw new IOException("缺少兼容 qcrilNr.db/Power Opt 属性行，无法完成挂载；未修改配置。");
+        if(radioServices().isEmpty())throw new IOException("没有可控制的已识别 RIL 服务，无法安全复制配置。");
     }
     static JSONObject diagnostic()throws Exception{
         JSONObject r=new JSONObject();
-        r.put("gsi",prop("ro.gsid.image_running").equals("1"));r.put("device",prop("ro.product.vendor.device"));r.put("sdk",prop("ro.build.version.sdk"));
-        String hals=shell("lshal");r.put("hook",hals.contains(HOOK));r.put("builtin",new File("/system/bin/qcom-atel-ready").exists());
-        boolean mount=!mountLine().isEmpty();r.put("mounted",mount);r.put("owned",owned());
-        r.put("canUndo",r.getBoolean("gsi")&&r.getString("device").equals("cupid")&&owned());
-        r.put("ril0",prop("init.svc.vendor.qcrild"));r.put("ril1",prop("init.svc.vendor.qcrild2"));
-        r.put("selinux",shell("getenforce"));r.put("masterNamespace",shell("readlink /proc/self/ns/mnt").equals(shell("readlink /proc/1/ns/mnt")));
-        String config="unknown";try{config=powerConfig();}catch(Exception ignored){}r.put("powerOpt",config);
-        r.put("integrity","not-recorded");if(mount&&owned()&&new File(STATE).isFile())r.put("integrity",originalHash().equals(metadata().getString("original_db_hash"))?"unchanged":"changed");
-        // Only boolean indicators leave the root worker. Raw log text is neither saved nor displayed.
-        String log="";try{log=shell("logcat -b radio -d -t 1800 -v brief");}catch(Exception ignored){}
+        r.put("gsi",safeProp("ro.gsid.image_running").equals("1"));String device=safeProp("ro.product.vendor.device");
+        if(device.isEmpty())device=safeProp("ro.product.device");r.put("device",device);r.put("sdk",safeProp("ro.build.version.sdk"));
+        boolean hook0=AtelSignal.available("oemhook0"),hook1=AtelSignal.available("oemhook1");
+        r.put("hook0",hook0);r.put("hook1",hook1);r.put("hook",hook0||hook1);r.put("availableSlots",(hook0?1:0)+(hook1?1:0));
+        r.put("builtin",new File("/system/bin/qcom-atel-ready").exists());
+        boolean mount=false,own=false;try{mount=!mountLine().isEmpty();own=owned();}catch(Exception ignored){}
+        r.put("mounted",mount);r.put("owned",own);r.put("canUndo",own&&masterNamespace());
+        r.put("ril0",safeProp("init.svc.vendor.qcrild"));r.put("ril1",safeProp("init.svc.vendor.qcrild2"));
+        r.put("servicesCompatible",!radioServices().isEmpty());r.put("selinux",safeShell("getenforce"));r.put("masterNamespace",masterNamespace());
+        String config="unknown";try{config=powerConfig();}catch(Exception ignored){}r.put("powerOpt",config);r.put("databaseCompatible",databaseCompatible());
+        r.put("integrity","not-recorded");if(mount&&own&&new File(STATE).isFile())try{r.put("integrity",originalHash().equals(metadata().getString("original_db_hash"))?"unchanged":"changed");}catch(Exception ignored){r.put("integrity","unknown");}
+        // Only boolean event indicators leave the worker; no raw logs or SMS contents.
+        String log=safeShell("logcat -b radio -d -t 1800 -v brief");
         boolean held=java.util.regex.Pattern.compile("MT SMS ACK NEEDED Power Opt buffer length [1-9][0-9]*").matcher(log).find(),clear=log.contains("Reset MT SMS ACK NEEDED Power Opt buffer"),incoming=log.contains("onIncomingSms")||log.contains("SMS received");
         r.put("bufferEvidence",held);r.put("timeoutEvidence",held&&clear);r.put("incomingEvidence",incoming);
         r.put("imsRegisteredEvidence",log.contains("onRegistered")||log.contains("IMS registered"));
-        r.put("supported",r.getBoolean("gsi")&&r.getString("device").equals("cupid")&&r.getBoolean("hook")&&r.getBoolean("masterNamespace")&&!r.getBoolean("builtin")&&!config.equals("unknown")&&!config.equals("missing"));
-        r.put("verdict",held?"观察到 Power Opt 缓冲事件（历史日志；需收信对照确认）":(config.equals("1")?"符合故障条件，但未捕获短信被截留证据":"当前未发现 Power Opt 缓冲证据"));
+        Compatibility c=policy(r);r.put("supported",c.readyRecommended());r.put("mountSupported",c.mountRecommended());
+        r.put("readyWarnings",c.readyWarnings());r.put("mountWarnings",c.mountWarnings());
+        r.put("verdict",held?"观察到 Power Opt 缓冲事件（历史日志；需收信对照确认）":(config.equals("1")?"符合 Power Opt 故障条件，但未捕获短信被截留证据":"未确认本故障；可以在警告后尝试 ATEL"));
         return r;
     }
-    static JSONObject mount()throws Exception{
-        requireGsi();
+    static JSONObject mount(boolean force)throws Exception{
+        JSONObject initial=diagnostic();
+        if(!policy(initial).allowMount(force))throw new IOException(initial.optString("mountWarnings")+"\n请在界面确认警告后尝试。");
+        requireMountPrerequisites();
         if(!mountLine().isEmpty()){if(!owned())throw new IOException("检测到其他挂载，拒绝覆盖");return diagnostic();}
-        if(!powerConfig().equals("1"))throw new IOException("原配置不是启用状态，拒绝盲目修改");
-        boolean mounted=false,stopped=false;
+        if(!force&&!powerConfig().equals("1"))throw new IOException("原配置不是启用状态，请确认警告后尝试");
+        boolean mounted=false;List<String> stopped=new ArrayList<>();
         try{
-            stopped=true;stop();shell("rm -rf "+CLONE+" && cp -a "+RADIO+" "+CLONE);
+            stopped=stop();shell("rm -rf "+CLONE+" && cp -a "+RADIO+" "+CLONE);
             String before=hash(new File(CLONE+"/qcrilNr.db"));
             SQLiteDatabase db=SQLiteDatabase.openDatabase(CLONE+"/qcrilNr.db",null,SQLiteDatabase.OPEN_READWRITE);
             try{
@@ -106,63 +124,56 @@ public final class Engine {
                 finally{db.endTransaction();}
                 try(Cursor c=db.rawQuery("PRAGMA integrity_check",null)){if(!c.moveToFirst()||!c.getString(0).equals("ok"))throw new IOException("副本数据库校验失败");}
             }finally{db.close();}
-            shell("chown radio:radio "+CLONE+"/qcrilNr.db; chmod 600 "+CLONE+"/qcrilNr.db; chcon -R u:object_r:vendor_radio_vendor_data_file:s0 "+CLONE);
+            // cp -a preserves this device's ownership/modes/labels. SQLite may create sidecar files.
+            String attributes=shell("stat -c '%u:%g %a' "+RADIO+"/qcrilNr.db");
+            if(!attributes.matches("[0-9]+:[0-9]+ [0-7]{3,4}"))throw new IOException("无法读取原配置权限");
+            String[] parts=attributes.split(" ");shell("chown "+parts[0]+" "+CLONE+"/qcrilNr.db");shell("chmod "+parts[1]+" "+CLONE+"/qcrilNr.db");
+            if(safeShell("getenforce").equals("Enforcing")){
+                String context=shell("ls -Zd "+RADIO).split(" +")[0];
+                if(!context.matches("[A-Za-z0-9_:,.-]+"))throw new IOException("无法确认 radio SELinux 标签");
+                shell("chcon -R "+RootClient.quote(context)+" "+CLONE);
+            }
             save(new JSONObject().put("original_db_hash",before).put("original_poweron_opt",prop(KEY)));
             shell("mount --bind "+CLONE+" "+RADIO);mounted=true;
             if(!owned()||!originalHash().equals(before))throw new IOException("挂载或原文件校验失败");
         }catch(Exception ex){if(mounted)shell("umount "+RADIO);throw ex;}
-        finally{if(stopped)start();}
+        finally{if(!stopped.isEmpty())start(stopped);}
         JSONObject r=diagnostic();r.put("message","临时挂载已启用。等待约 30 秒恢复 4G/IMS，再测试短信。");return r;
     }
     static JSONObject undo()throws Exception{
-        requireEnvironment();
+        if(!masterNamespace())throw new IOException("撤销挂载需要主挂载空间");
         if(mountLine().isEmpty()){JSONObject r=diagnostic();r.put("message","当前没有临时挂载。");return r;}
         if(!owned())throw new IOException("拒绝撤销其他应用的挂载");
         String before=metadata().getString("original_db_hash");
-        try{stop();shell("umount "+RADIO);if(!mountLine().isEmpty())throw new IOException("卸载未完成");}
-        finally{start();}
+        List<String> stopped=stop();
+        try{shell("umount "+RADIO);if(!mountLine().isEmpty())throw new IOException("卸载未完成");}
+        finally{start(stopped);}
         boolean unchanged=originalHash().equals(before);
         shell("rm -rf "+CLONE+"; rm -f "+STATE);
         JSONObject r=diagnostic();r.put("integrity",unchanged?"unchanged":"changed");r.put("message","已撤销挂载并恢复原配置。等待约 30 秒恢复网络。");return r;
     }
-    static JSONObject ready()throws Exception{
-        requireGsi();if(!mountLine().isEmpty())throw new IOException("先撤销配置挂载，再单独验证 ATEL 方案");
-        int sent=0;StringBuilder slots=new StringBuilder();
-        for(String s:new String[]{"oemhook0","oemhook1"}){
-            try{AtelSignal.send(s);Thread.sleep(5000);AtelSignal.send(s);sent++;slots.append(s).append(' ');}
-            catch(Exception ignored){}
+    static JSONObject ready(boolean force)throws Exception{
+        JSONObject initial=diagnostic();
+        if(!policy(initial).allowReady(force))throw new IOException(initial.optString("readyWarnings")+"\n可在界面警告后选择仍然尝试。");
+        int sent=0,expected=initial.optInt("availableSlots");StringBuilder slots=new StringBuilder(),failures=new StringBuilder();
+        for(String slot:new String[]{"oemhook0","oemhook1"}){
+            if(!force&&!initial.optBoolean(slot.equals("oemhook0")?"hook0":"hook1"))continue;
+            try{AtelSignal.send(slot);Thread.sleep(1000);AtelSignal.send(slot);sent++;slots.append(slot).append(' ');}
+            catch(Throwable ex){failures.append(slot).append(": ").append(ex.getClass().getSimpleName()).append(' ');}
         }
-        if(sent==0)throw new IOException("两个 OEM hook 均未发送成功");
-        JSONObject r=diagnostic();r.put("sentSlots",sent);r.put("expectedSlots",2);r.put("message","已向 "+slots+"发送 ATEL UI ready（单向接口，不代表已确认生效）。需短信对照；无线服务重启后需重发。配置未修改。");return r;
-    }
-    static JSONObject watch()throws Exception{
-        JSONObject r=new JSONObject();boolean gsi=prop("ro.gsid.image_running").equals("1");
-        r.put("gsi",gsi);r.put("eligible",false);r.put("mounted",!mountLine().isEmpty());
-        if(!gsi)return r;
-        if(!prop("ro.product.vendor.device").equals("cupid")){r.put("message","此版本尚未为该设备开放自动修复");return r;}
-        if(new File("/system/bin/qcom-atel-ready").exists()){r.put("message","系统已有内置 ATEL 修复，框架停止重复上报");return r;}
-        if(!shell("readlink /proc/self/ns/mnt").equals(shell("readlink /proc/1/ns/mnt"))){r.put("message","root 位于私有挂载空间");return r;}
-        r.put("eligible",true);
-        StringBuilder identity=new StringBuilder();
-        String pids="";try{pids=shell("pidof qcrilNrd");}catch(Exception ignored){}
-        for(String pid:pids.split(" +"))if(pid.matches("[0-9]+")){
-            try{
-                String stat=new String(java.nio.file.Files.readAllBytes(new File("/proc/"+pid+"/stat").toPath()),java.nio.charset.StandardCharsets.UTF_8);
-                String[] fields=stat.substring(stat.lastIndexOf(')')+2).split(" +");
-                identity.append(pid).append(':').append(fields[19]).append(';');
-            }catch(Exception ignored){}
-        }
-        r.put("identity",identity.toString());return r;
+        if(sent==0)throw new IOException("未能发送 ATEL 请求。已尝试固定接口；root、接口缺失或 SELinux 访问限制不能通过警告按钮创建。 "+failures);
+        JSONObject r=diagnostic();r.put("sentSlots",sent);r.put("expectedSlots",expected>0?expected:sent);r.put("forced",force);
+        r.put("message","已向 "+slots+"发送 ATEL UI ready（单向请求，不代表短信已修复）。请测试收信；配置未修改。"+(failures.length()>0?" 部分接口失败："+failures:""));return r;
     }
     public static void main(String[] args){
-        JSONObject result=new JSONObject();int exit=0;
+        JSONObject result=new JSONObject();
         try{
             if(args.length!=1)throw new IOException("Invalid action");
             try(java.io.RandomAccessFile mutex=new java.io.RandomAccessFile("/dev/gsisms-worker.lock","rw");java.nio.channels.FileChannel channel=mutex.getChannel();java.nio.channels.FileLock lock=channel.lock()){
-            switch(args[0]){case "watch":result=watch();break;case "detect":result=diagnostic();break;case "mount":result=mount();break;case "undo":result=undo();break;case "ready":result=ready();break;default:throw new IOException("Unknown action");}
+            switch(args[0]){case "detect":result=diagnostic();break;case "mount":result=mount(false);break;case "mount-force":result=mount(true);break;case "undo":result=undo();break;case "ready":result=ready(false);break;case "ready-force":result=ready(true);break;default:throw new IOException("Unknown action");}
             result.put("ok",true);
             }
-        }catch(Throwable ex){exit=1;try{result.put("ok",false);result.put("message",RootClient.safeError(ex.getMessage()==null?ex.getClass().getSimpleName():ex.getMessage()));}catch(Exception ignored){}}
+        }catch(Throwable ex){try{result.put("ok",false);result.put("message",RootClient.safeError(ex.getMessage()==null?ex.getClass().getSimpleName():ex.getMessage()));}catch(Exception ignored){}}
         System.out.println("GSISMS_RESULT="+result);System.out.flush();System.exit(0);
     }
 }

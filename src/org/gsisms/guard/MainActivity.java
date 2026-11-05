@@ -44,16 +44,26 @@ public final class MainActivity extends Activity {
         });
         TextView autoInfo=text("开机后上报 ATEL UI 就绪；每 30 秒检查无线服务是否重启，重启后自动重发；每 5 分钟补发一次。以低优先级通知显示运行状态，不修改系统分区。",13,Color.rgb(85,100,116));autoInfo.setPadding(0,dp(8),0,0);framework.addView(autoInfo);refreshFramework();
         LinearLayout second=card(body);second.addView(text("故障判断",16,Color.rgb(25,65,90)));
-        evidence=text("机型和配置只能判断是否符合条件。短信进入 Power Opt 缓冲的日志，才能提供直接证据；没有日志不代表没有故障。",14,Color.rgb(85,100,116));evidence.setPadding(0,dp(12),0,0);second.addView(evidence);
+        evidence=text("接口和配置只能判断是否符合条件。短信进入 Power Opt 缓冲的日志，才能提供直接证据；没有日志不代表没有故障。",14,Color.rgb(85,100,116));evidence.setPadding(0,dp(12),0,0);second.addView(evidence);
         LinearLayout actions=card(body);actions.addView(text("本次启动的修复",16,Color.rgb(25,65,90)));
-        ready=button(actions,"上报 ATEL UI 就绪",()->confirm("上报 ATEL UI 就绪","向每个 SIM 槽发送已核对的就绪请求，不修改数据库和省电配置。接口为单向调用，发送成功不等于短信已修复。无线服务重启后需重新发送。", "ready"));
-        mount=button(actions,"临时关闭 Power Opt · 挂载副本",()->confirm("启用临时挂载","修改配置副本并临时挂载，无线服务会短暂重启。原始数据库保留；重启后挂载消失。已在小米 12 cupid 验证短信恢复。", "mount"));
+        ready=button(actions,"上报 ATEL UI 就绪",()->confirmRepair(false));
+        mount=button(actions,"临时关闭 Power Opt · 挂载副本",()->confirmRepair(true));
         undo=button(actions,"撤销临时挂载",()->confirm("撤销临时挂载","恢复读取原始配置，无线服务会短暂重启。请等待网络恢复。", "undo"));
-        note=text("仅支持已验证的小米 12 cupid + DSU/GSI。其他设备可检测，修改操作暂不开放。",13,Color.rgb(85,100,116));note.setPadding(0,dp(14),0,0);actions.addView(note);
+        note=text("按实际接口与配置检测，不限制机型或系统。条件不符可在警告后仍然尝试；接口/root 缺失时会报告失败。",13,Color.rgb(85,100,116));note.setPadding(0,dp(14),0,0);actions.addView(note);
         LinearLayout about=card(body);about.addView(text("隐私与恢复",16,Color.rgb(25,65,90)));
         TextView privacy=text("不读取短信正文、验证码和卡号，不联网。不会刷写基带、修改 NV/MBN 或关闭 SELinux。自动框架由你手动启用；关闭后不再自动上报。\n\n卸载应用不会自动撤销已有挂载，请先撤销或重启手机。",14,Color.rgb(85,100,116));privacy.setPadding(0,dp(12),0,0);about.addView(privacy);
-        button(about,"开源说明 / 设计限制",()->new AlertDialog.Builder(this).setTitle("开源与限制").setMessage("版本 0.3.0，源码随 APK 提供，GPL-3.0（包含 PHH Superuser 客户端）。\n\nATEL 协议依据 yarosz/lp3-treble 和 TrebleDroid/device_phh_treble PR #88。\n\nroot 本身可能被应用检测。已在当前小米 12 GSI 确认 ATEL 方案收到验证码；其他设备须独立核对。\n\n没有日志权限或无线诊断日志未开启时，只能判断兼容条件。此版本不会自动开启 vendor 调试日志。\n\n内置未修改的 PHH su 客户端，保留 Superuser 自身授权流程；随源码提供原客户端及对应开源项目。").setPositiveButton("知道了",null).show());
-        ready.setEnabled(false);mount.setEnabled(false);undo.setEnabled(false);
+        button(about,"开源说明 / 设计限制",()->new AlertDialog.Builder(this).setTitle("开源与限制").setMessage("版本 0.4.0，源码随 APK 提供，GPL-3.0（包含 PHH Superuser 客户端）。\n\nATEL 协议依据 yarosz/lp3-treble 和 TrebleDroid/device_phh_treble PR #88。\n\nroot 本身可能被应用检测。已在当前小米 12 GSI 确认 ATEL 方案收到验证码；其他设备须独立核对。\n\n没有日志权限或无线诊断日志未开启时，只能判断兼容条件。此版本不会自动开启 vendor 调试日志。\n\n内置未修改的 PHH su 客户端，保留 Superuser 自身授权流程；随源码提供原客户端及对应开源项目。").setPositiveButton("知道了",null).show());
+        undo.setEnabled(false);
+    }
+    private void confirmRepair(boolean mounting){
+        boolean recommended=current!=null&&current.optBoolean(mounting?"mountSupported":"supported");
+        String warning=current==null?"尚未完成检测，无法确认接口和配置条件。":current.optString(mounting?"mountWarnings":"readyWarnings","检测未完成。");
+        String message=mounting?"临时修改配置副本并挂载，可能短暂中断通话与数据。原始目录不直接改写；主系统也允许尝试，但 radio 数据可能共享。需兼容数据库、主挂载空间与可控制 RIL；这些缺失时只能报告失败。重启清除挂载。":"仅尝试固定 ATEL 就绪请求，不修改数据库或省电配置。已检测接口也不能保证短信修复；请以收信确认。";
+        if(!recommended)message="检测条件不匹配：\n"+warning+"\n\n"+message;
+        final String action=(mounting?"mount":"ready")+(recommended?"":"-force");
+        new AlertDialog.Builder(this).setTitle(recommended?(mounting?"启用临时挂载":"上报 ATEL 就绪"):"兼容性警告")
+          .setMessage(message).setNegativeButton("取消",null)
+          .setPositiveButton(recommended?"执行":"仍然尝试修复",(d,w)->run(action)).show();
     }
     private void confirm(String title,String message,String action){new AlertDialog.Builder(this).setTitle(title).setMessage(message).setNegativeButton("取消",null).setPositiveButton("执行",(d,w)->run(action)).show();}
     private void run(String action){
@@ -66,34 +76,38 @@ public final class MainActivity extends Activity {
                 JSONObject result=new JSONObject(json);runOnUiThread(()->display(result));
             }catch(Exception ex){runOnUiThread(()->{
                 status.setText("操作未完成");details.setText(RootClient.safeError(ex.getMessage()==null?"Root 不可用":ex.getMessage()));
-                for(Button b:buttons)b.setEnabled(true);ready.setEnabled(false);mount.setEnabled(false);undo.setEnabled(false);
+                for(Button b:buttons)b.setEnabled(true);undo.setEnabled(false);current=null;
             });}
         });
     }
     private void display(JSONObject r){refreshFramework();
         current=r;for(Button b:buttons)b.setEnabled(true);
-        if(!r.optBoolean("ok")){status.setText("操作未完成");details.setText(r.optString("message"));ready.setEnabled(false);mount.setEnabled(false);undo.setEnabled(false);return;}
+        if(!r.optBoolean("ok")){status.setText("操作未完成");details.setText(r.optString("message"));ready.setEnabled(true);mount.setEnabled(true);undo.setEnabled(r.optBoolean("canUndo"));return;}
         boolean mounted=r.optBoolean("mounted"),supported=r.optBoolean("supported"),own=r.optBoolean("owned");
-        status.setText(mounted?(own?"临时挂载已启用":"检测到其他挂载"):(supported?"符合兼容条件":"当前仅可检测"));
+        status.setText(mounted?(own?"临时挂载已启用":"检测到其他挂载"):(supported?"符合兼容条件":"条件未确认，可警告后尝试"));
         String integrity=r.optString("integrity");
         details.setText("设备："+r.optString("device")+" · Android SDK "+r.optString("sdk")+"\nDSU/GSI："+(r.optBoolean("gsi")?"正在运行":"否")+"\n高通 OEM hook："+(r.optBoolean("hook")?"存在":"未找到")+"\nPower Opt 配置："+r.optString("powerOpt")+"\n无线服务："+r.optString("ril0")+" / "+r.optString("ril1")+"\n原文件校验："+(integrity.equals("unchanged")?"一致":integrity.equals("changed")?"发生变化":"暂无记录")+"\nSELinux："+r.optString("selinux"));
         evidence.setText(r.optString("verdict")+"\n\n缓冲事件："+(r.optBoolean("bufferEvidence")?"观察到":"未观察到")+"\n接收回调："+(r.optBoolean("incomingEvidence")?"观察到":"未观察到")+"\n\n历史日志不能保证是刚刚的短信；最终以受控收信对照为准。" );
-        ready.setEnabled(supported&&!mounted);mount.setEnabled(supported&&!mounted&&r.optString("powerOpt").equals("1"));undo.setEnabled(r.optBoolean("canUndo")&&mounted&&own);
+        ready.setEnabled(true);mount.setEnabled(true);undo.setEnabled(r.optBoolean("canUndo")&&mounted&&own);
         if(!r.optString("message").isEmpty())new AlertDialog.Builder(this).setTitle("结果").setMessage(r.optString("message")).setPositiveButton("知道了",null).show();
     }
     private void refreshFramework(){
         boolean enabled=getSharedPreferences("framework",0).getBoolean("enabled",false);
         frameworkButton.setText(enabled?"关闭自动框架":"启用自动框架");
-        frameworkState.setText((enabled?"自动框架：已启用":"自动框架：未启用")+"\n"+getSharedPreferences("framework",0).getString("lastState","开启后保留通知，建议授予永久 root 权限。"));
+        frameworkState.setText((enabled?(getSharedPreferences("framework",0).getBoolean("force",false)?"自动框架：已启用（已确认警告）":"自动框架：已启用"):"自动框架：未启用")+"\n"+getSharedPreferences("framework",0).getString("lastState","开启后保留通知，建议授予永久 root 权限。"));
     }
     private void toggleFramework(){
         boolean enabled=getSharedPreferences("framework",0).getBoolean("enabled",false);
         if(enabled){getSharedPreferences("framework",0).edit().putBoolean("enabled",false).apply();stopService(new android.content.Intent(this,FrameworkService.class));refreshFramework();return;}
-        if(current==null||!current.optBoolean("supported")){new AlertDialog.Builder(this).setMessage("先完成设备检测，确认兼容条件后再启用。").setPositiveButton("知道了",null).show();return;}
-        new AlertDialog.Builder(this).setTitle("启用 GSI 短信修复框架").setMessage("开启后自动启动并上报 ATEL UI 就绪，检测到无线服务重启时再次上报。需要持久 root 授权；不会自动挂载或修改配置。请允许通知。关闭框架不会把已经上报的就绪状态改回 0，该状态随无线服务重启或手机重启重置。")
-        .setNegativeButton("取消",null).setPositiveButton("启用",(d,w)->{
+        boolean recommended=current!=null&&current.optBoolean("supported");
+        String warning=current==null?"尚未完成检测。":current.optString("readyWarnings");
+        String message="自动上报 ATEL 就绪，跟随已识别 RIL 重启；其他服务每 5 分钟补发。需要持久 root 与后台权限。不会自动挂载或重启 RIL。关闭后停止上报。";
+        if(!recommended)message="检测条件不匹配：\n"+warning+"\n\n仍可启用尝试模式，条件未就绪时会报告失败并重试。\n"+message;
+        new AlertDialog.Builder(this).setTitle(recommended?"启用自动框架":"自动框架兼容性警告").setMessage(message)
+        .setNegativeButton("取消",null).setPositiveButton(recommended?"启用":"仍然启用尝试",(d,w)->{
             if(android.os.Build.VERSION.SDK_INT>=33&&checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS)!=android.content.pm.PackageManager.PERMISSION_GRANTED)requestPermissions(new String[]{android.Manifest.permission.POST_NOTIFICATIONS},41);
-            getSharedPreferences("framework",0).edit().putBoolean("enabled",true).apply();startForegroundService(new android.content.Intent(this,FrameworkService.class));refreshFramework();
+            getSharedPreferences("framework",0).edit().putBoolean("enabled",true).putBoolean("force",!recommended).apply();
+            startForegroundService(new android.content.Intent(this,FrameworkService.class));refreshFramework();
         }).show();
     }
     @Override protected void onResume(){super.onResume();if(frameworkState!=null)refreshFramework();}

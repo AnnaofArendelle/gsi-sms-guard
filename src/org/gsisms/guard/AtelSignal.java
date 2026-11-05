@@ -12,6 +12,28 @@ import java.util.ArrayList;
  */
 public final class AtelSignal {
     static final String IFACE = "vendor.qti.hardware.radio.qcrilhook@1.0::IQtiOemHook";
+    static Object service(String instance) throws Exception {
+        if (!instance.equals("oemhook0") && !instance.equals("oemhook1"))
+            throw new IllegalArgumentException("Unsupported slot");
+        return Class.forName("android.os.HwBinder").getMethod("getService", String.class, String.class)
+                .invoke(null, IFACE, instance);
+    }
+    static boolean available(String instance) {
+        Object req=null,reply=null;
+        try {
+            Object binder=service(instance);if(binder==null)return false;
+            Class<?> hp=Class.forName("android.os.HwParcel");
+            req=hp.getConstructor().newInstance();reply=hp.getConstructor().newInstance();
+            hp.getMethod("writeInterfaceToken",String.class).invoke(req,"android.hidl.base@1.0::IBase");
+            Class.forName("android.os.IHwBinder").getMethod("transact",int.class,hp,hp,int.class)
+                    .invoke(binder,256067662,req,reply,0); // IBase.interfaceChain: read-only protocol probe
+            hp.getMethod("verifySuccess").invoke(reply);
+            return ((java.util.List<?>)hp.getMethod("readStringVector").invoke(reply)).contains(IFACE);
+        } catch(Throwable ex){return false;}
+        finally {
+            for(Object parcel:new Object[]{req,reply})if(parcel!=null)try{parcel.getClass().getMethod("release").invoke(parcel);}catch(Throwable ignored){}
+        }
+    }
     static void send(String instance) throws Exception {
         if (!instance.equals("oemhook0") && !instance.equals("oemhook1"))
             throw new IllegalArgumentException("Unsupported slot");

@@ -42,6 +42,13 @@ credential = re.compile(rb'(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]
 for file in files:
     assert file.suffix not in {'.jks', '.keystore', '.p12', '.db', '.log'}, f'Private/runtime file tracked: {file.relative_to(ROOT)}'
     assert not credential.search(file.read_bytes()), f'Credential found: {file.relative_to(ROOT)}'
+# Model/ROM metadata must not silently become repair allowlists again.
+for name in ['Engine.java','FrameworkService.java','Compatibility.java','PollState.java']:
+    text = (ROOT / 'src/org/gsisms/guard' / name).read_text()
+    assert 'cupid' not in text, f'Model allowlist reintroduced: {name}'
+assert 'ro.gsid.image_running' not in (ROOT / 'src/org/gsisms/guard/FrameworkService.java').read_text()
+ui = (ROOT / 'src/org/gsisms/guard/MainActivity.java').read_text()
+assert '仍然尝试修复' in ui and '仍然启用尝试' in ui
 apk = ROOT / 'build/GSI-SMS-Guard.apk'
 if apk.exists():
     with zipfile.ZipFile(apk) as archive:

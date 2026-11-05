@@ -6,7 +6,7 @@
 
 一个可以打开管理界面的 Android root 应用，补发高通 **ATEL UI ready** 通知，修复已确认由开机 Power Opt 短信缓冲引起的 GSI 接收问题。
 
-**已验证设备：小米 12 `cupid`，Android 13 DSU/GSI，联通 SIM。** 只上报 ATEL 就绪、保留 Power Opt 默认值 `1`、不挂载配置时，已实际收到验证码。目前只对这台机型的 DSU/GSI 开放修改，其他设备可以检测。
+**已验证设备：小米 12 `cupid`，Android 13 DSU/GSI，联通 SIM。** 只上报 ATEL 就绪、保留 Power Opt 默认值 `1`、不挂载配置时，已实际收到验证码。从 0.4.0 起不按机型或 ROM 名称限制修复；检测条件匹配时允许执行，条件不符或尚未检测时可确认警告后选择“仍然尝试修复”。其他设备尚未完成实际收信验证。
 
 [下载正式 Release](https://github.com/AnnaofArendelle/gsi-sms-guard/releases/latest) · [设备验证记录](docs/DEVICE_VALIDATION.md) · [发布维护说明](docs/RELEASING.md)
 
@@ -23,8 +23,8 @@
 | 功能 | 行为 |
 | --- | --- |
 | 设备检测 | 检查 DSU/GSI、机型、OEM hook、数据库、RIL 状态、挂载空间和内置修复 |
-| 自动框架 | 前台服务接收开机/应用更新事件，每 30 秒检查 RIL 进程及启动时间，变化时重新上报；每 5 分钟补发 |
-| 手动上报 | 向两个槽位发送已核对的固定 ATEL 就绪请求 |
+| 自动框架 | 前台服务接收开机/应用更新事件，每 30 秒检查 RIL 进程及启动时间，变化时重新上报；未识别进程时仍每 5 分钟补发 |
+| 手动上报 | 向两个槽位发送已核对的固定 ATEL 就绪请求，单槽位也可使用 |
 | 临时挂载备用方案 | 复制 radio 目录，只改副本的 Power Opt 值；临时 bind mount 并重启 RIL，可单独撤销 |
 | 故障证据提示 | 只返回短信缓冲、超时和接收回调是否出现；不显示原始日志或短信内容 |
 
@@ -33,9 +33,9 @@
 ## 安装与使用
 
 1. 从 [Releases](https://github.com/AnnaofArendelle/gsi-sms-guard/releases) 下载 APK；同页提供 `SHA256SUMS` 与签名证书信息。
-2. 在正在运行的 DSU/GSI 中安装，打开应用，点击 **检测 / 刷新状态**。
+2. 在目标 Android 系统安装，打开应用，点击 **检测 / 刷新状态**。LineageOS、其他 GSI、设备专用 ROM 和主系统都可以检测与尝试。
 3. 允许 Superuser/root 请求。需要后台与开机自动工作时，为应用设置持久 root 授权。
-4. 启用 **自动框架**，允许通知。通过 **打开后台 / 电池设置** 将应用电池使用设为“不受限制”；系统提供自启动开关时允许它。
+4. 条件匹配时正常启用 **自动框架**；不匹配时先查看原因，再选择 **仍然启用尝试**。允许通知。通过 **打开后台 / 电池设置** 将应用电池使用设为“不受限制”；系统提供自启动开关时允许它。
 5. 等通知显示已上报，使用一次受控短信接收测试确认效果。
 
 设备需要已有可用 root。本 APK 不提供 root、解锁或刷机功能。PHH Superuser 的客户端仍经过已有 daemon 的用户授权流程。
@@ -50,8 +50,9 @@
 
 ## 支持范围与隐私
 
-- 修改仅限 `cupid` + 正在运行的 DSU/GSI + 已核对的接口与配置 + init 主挂载空间。主系统不执行无线操作。
-- 发现 `/system/bin/qcom-atel-ready` 时阻止重复修改，建议先确认 GSI 自带修复。
+- **ATEL 推荐条件**：至少一个 OEM hook 的只读 `IBase.interfaceChain` 探测匹配，Power Opt=1 或观察到非空短信缓冲证据，且没有内置修复/现有 radio 挂载。不依赖机型、DSU 标志、数据库存在或主挂载空间。
+- **警告覆盖**：接口探测失败、故障未确认、已有内置修复或挂载时，按钮仍可在确认后发起固定 ATEL 请求。自动尝试模式保存独立偏好；接口暂不可用会显示失败并重试。它不能创造 root 或不存在的接口，也不会绕过 SELinux。
+- **临时挂载**：独立检查兼容数据库、主挂载空间和可控制 RIL。条件不符也显示“仍然尝试修复”，但预检失败时返回具体错误，不覆盖其他挂载或盲写原配置。RIL 名称不匹配时仍可用 ATEL。
 - 随附未修改的 PHH 客户端是 **ARM32 静态程序**，存放在 ARM64 APK 的 nativeLibraryDir，当前设备已实测执行成功。不支持 ARM32 执行的设备不能据此推断兼容。
 - APK 没有 `INTERNET`、`READ_SMS`、`SEND_SMS` 或 `READ_PHONE_STATE` 权限；不读取短信正文、验证码或卡号，不自动发送测试短信。
 - root worker 可短暂读取 radio 日志做本地事件判断，不保存或返回原始日志，也不自动开启 vendor 调试。
@@ -60,11 +61,13 @@
 
 ## 验证结果
 
-已通过 APK 构建/签名、手机内 root 授权、模拟 `BOOT_COMPLETED`、更新后自启动、RIL 重启后的自动补发、两个槽位 UI ready=`1`、纯 ATEL 模式实际收信、临时挂载与撤销。
+0.3.0 已通过 APK 构建/签名、手机内 root 授权、模拟 `BOOT_COMPLETED`、更新后自启动、RIL 重启后的自动补发、两个槽位 UI ready=`1`、纯 ATEL 模式实际收信、临时挂载与撤销。
 
 完整手机重启后的最终版启动、长期锁屏/Doze 尚待验证。前台服务仍可能受系统后台限制。手动 RIL 重启测试曾使 vendor `qtidataservices` 出现异常，随后 LTE 注册恢复；自动 ATEL 模式不会主动重启 RIL。
 
 原数据库的 Power Opt 行仍为 `value=NULL, def_val=1`，配置属性表与早期快照一致。整库可由无线服务正常更新，不能用旧文件哈希保证跨重启完全不变。详细事实与限制见 [设备验证记录](docs/DEVICE_VALIDATION.md)。
+
+0.4.0 的策略测试覆盖条件匹配、单/缺失接口、警告覆盖、内置修复与挂载提示、私有挂载空间下的 ATEL、未知进程回退。该版本只在现有小米 12 上进行接口与运行回归，不宣称其他机型已收信验证。
 
 ## 本地构建
 
@@ -90,10 +93,10 @@ GSI_JAVA_HOME=/path/to/jdk-17 ./build.sh
 
 ## CI 与 Release
 
-- `main` push、Pull Request、手动触发：ShellCheck、actionlint、Java 编译、APK 打包与签名、11 个设备保护/进程解析检查、权限/原生载荷/第三方源码校验、公开文件凭据检查。
+- `main` push、Pull Request、手动触发：ShellCheck、actionlint、Java 编译、APK 打包与签名、20 个兼容策略/警告覆盖/进程解析检查、权限/原生载荷/第三方源码校验、公开文件凭据检查。
 - `v*` 标签：校验标签与 manifest 版本一致，使用 GitHub Secrets 中的长期签名构建；检查通过后发布 APK、完整源码归档、签名证书信息与 SHA-256 校验值。
 - 外部 Actions 固定到提交 SHA，Dependabot 每月检查更新。CI 默认只读，Release 仅发布 job 获得 `contents: write`。
-- CI 不连接手机，不能验证实际 modem 行为。新增设备必须独立进行接收对照。
+- CI 不连接手机，不能验证实际 modem 行为。其他设备的实际效果仍需独立进行接收对照；允许尝试不等于已经验证兼容。
 
 ## 开源参考与许可
 

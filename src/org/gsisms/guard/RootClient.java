@@ -20,12 +20,12 @@ final class RootClient {
     }
     synchronized void connect() throws Exception {
         if (suPath != null) return;
-        for (String candidate : new String[]{"/system/bin/su", "/system/xbin/su", bundledPhh, "/system/bin/phh-su"}) {
+        for (String candidate : new String[]{"/system/bin/su", "/system/xbin/su", "/sbin/su", "/debug_ramdisk/su", bundledPhh, "/system/bin/phh-su"}) {
             if (!new File(candidate).canExecute()) continue;
             try { String r = execute(candidate, "id"); if (r.contains("uid=0(root)")) { suPath=candidate; return; } }
             catch (Exception ignored) {}
         }
-        throw new IOException("Root 未授权或不可用。请开启 Dynamic Superuser，并允许本应用的 root 请求。");
+        throw new IOException("Root 未授权或不可用。请在当前系统的 root 管理器中允许本应用；PHH GSI 需启用 Dynamic Superuser。");
     }
     synchronized String run(String command) throws Exception {
         connect(); return execute(suPath, command);
